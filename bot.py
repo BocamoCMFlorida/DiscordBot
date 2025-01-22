@@ -6,7 +6,7 @@ from discord import app_commands
 import asyncio
 import random
 import datetime
-
+from datetime import datetime, timedelta
 import json
 from typing import Dict, Optional
 
@@ -92,6 +92,87 @@ RESPUESTAS = [
     "Sigue así y te mando con la virgen negra"
 ]
 
+    
+class EconomySystem:
+    def __init__(self, filename: str = "economy.json"):
+        self.filename = filename
+        self.accounts = self.load_accounts()
+
+    def load_accounts(self):
+        try:
+            with open(self.filename, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+
+    def save_accounts(self):
+        with open(self.filename, 'w') as f:
+            json.dump(self.accounts, f)
+
+    def get_balance(self, user_id: str):
+        return self.accounts.get(str(user_id), 0)
+
+    def add_money(self, user_id: str, amount: int):
+        self.accounts[str(user_id)] = self.get_balance(user_id) + amount
+        self.save_accounts()
+
+    def remove_money(self, user_id: str, amount: int):
+        if self.get_balance(user_id) >= amount:
+            self.accounts[str(user_id)] = self.get_balance(user_id) - amount
+            self.save_accounts()
+            return True
+        return False
+class JobSystem:
+    def __init__(self):
+        # Define los trabajos con sus cooldowns específicos
+        self.jobs = {
+            "minero": {"min": 100, "max": 200, "description": "Trabajas como minero, extrayendo minerales.", "cooldown_minutes": 15},
+            "pescador": {"min": 50, "max": 150, "description": "Sales a pescar y traes una buena captura.", "cooldown_minutes": 10},
+            "programador": {"min": 200, "max": 400, "description": "Creas código y resuelves problemas.", "cooldown_minutes": 30},
+        }
+        self.user_cooldowns = {}  # Guarda los tiempos de cooldown por usuario
+
+    def can_work(self, user_id: str):
+        """Verifica si el usuario puede trabajar, según el cooldown global del usuario."""
+        last_work_time = self.user_cooldowns.get(user_id)
+        if last_work_time is None or datetime.now() - last_work_time >= timedelta(minutes=1):
+            return True  # El usuario puede trabajar si no tiene cooldown o si ha pasado el tiempo de espera global
+        return False
+
+    def set_cooldown(self, user_id: str, cooldown_minutes: int):
+        """Establece el tiempo de cooldown global para un usuario después de realizar un trabajo."""
+        self.user_cooldowns[user_id] = datetime.now() + timedelta(minutes=cooldown_minutes)
+
+    def perform_job(self, user_id: str, job_name: str, economy: EconomySystem):
+        """Ejecuta un trabajo para un usuario."""
+        if not self.can_work(user_id):
+            remaining = self.get_remaining_cooldown(user_id)
+            return f"❌ Debes esperar {remaining.seconds // 60} minutos y {remaining.seconds % 60} segundos para trabajar de nuevo."
+
+        if job_name not in self.jobs:
+            return "❌ Ese trabajo no existe."
+
+        job = self.jobs[job_name]
+        earnings = random.randint(job["min"], job["max"])
+        economy.add_money(user_id, earnings)
+
+        # Establecer el cooldown global del usuario basado en el trabajo realizado
+        self.set_cooldown(user_id, job["cooldown_minutes"])
+
+        return (
+            f"✅ {job['description']}\n"
+            f"💰 Has ganado {earnings} monedas trabajando como **{job_name}**.\n"
+            f"📜 Tu balance actual: {economy.get_balance(user_id)} monedas."
+        )
+
+    def get_remaining_cooldown(self, user_id: str):
+        """Calcula el tiempo restante de cooldown para un usuario."""
+        if user_id in self.user_cooldowns:
+            elapsed = datetime.now() - self.user_cooldowns[user_id]
+            remaining = timedelta(minutes=1) - elapsed  # El cooldown global se configura en 1 minuto
+            if remaining.total_seconds() > 0:
+                return remaining
+        return timedelta(0)
 class Bot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
@@ -106,6 +187,8 @@ class Bot(commands.Bot):
             print(f"Error en setup_hook: {e}")
 
 client = Bot()
+economy = EconomySystem()
+job_system = JobSystem()
 
 @client.event
 async def on_ready():
@@ -247,35 +330,7 @@ async def ruleta(interaction: discord.Interaction):
 
 
 # Primero el sistema de economía base
-class EconomySystem:
-    def __init__(self, filename: str = "economy.json"):
-        self.filename = filename
-        self.accounts = self.load_accounts()
 
-    def load_accounts(self):
-        try:
-            with open(self.filename, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {}
-
-    def save_accounts(self):
-        with open(self.filename, 'w') as f:
-            json.dump(self.accounts, f)
-
-    def get_balance(self, user_id: str):
-        return self.accounts.get(str(user_id), 0)
-
-    def add_money(self, user_id: str, amount: int):
-        self.accounts[str(user_id)] = self.get_balance(user_id) + amount
-        self.save_accounts()
-
-    def remove_money(self, user_id: str, amount: int):
-        if self.get_balance(user_id) >= amount:
-            self.accounts[str(user_id)] = self.get_balance(user_id) - amount
-            self.save_accounts()
-            return True
-        return False
 
 class DiceView(View):
     def __init__(self, user_id: str, initial_bet: int, economy):
@@ -529,12 +584,22 @@ class SlotMachineView(View):
         )
 
 # Inicializar el sistema de economía
-economy = EconomySystem()
 
-@client.tree.command(name="balance", description="Muestra tu balance de monedas")
-async def balance(interaction: discord.Interaction):
-    balance = economy.get_balance(str(interaction.user.id))
-    await interaction.response.send_message(f"💰 Tu balance actual es de {balance} monedas")
+
+@client.tree.command(name="balance", description="Muestra el balance de monedas de un usuario.")
+async def balance(interaction: discord.Interaction, usuario: discord.Member = None):
+    """
+    Comando para mostrar el balance de monedas de un usuario específico o del autor del comando si no se especifica.
+    """
+    # Si no se especifica un usuario, se usa el autor del comando
+    usuario = usuario or interaction.user
+    user_id = str(usuario.id)
+    balance = economy.get_balance(user_id)
+
+    if usuario == interaction.user:
+        await interaction.response.send_message(f"💰 Tu balance actual es de {balance} monedas.")
+    else:
+        await interaction.response.send_message(f"💰 El balance actual de {usuario.mention} es de {balance} monedas.")
 
 @client.tree.command(name="daily", description="Reclama tus monedas diarias")
 @app_commands.checks.cooldown(1, 86400)
@@ -1333,7 +1398,92 @@ async def tricolor(interaction: discord.Interaction, apuesta: int):
             "❌ Ha ocurrido un error al iniciar la ruleta. Tu apuesta ha sido devuelta.",
             ephemeral=True
         )
+@client.tree.command(name="trabajar", description="Realiza un trabajo para ganar monedas")
+async def trabajar(interaction: discord.Interaction, trabajo: str):
+    user_id = str(interaction.user.id)
 
+    if trabajo not in job_system.jobs:
+        await interaction.response.send_message(
+            "❌ Ese trabajo no existe. Los trabajos disponibles son:\n" +
+            ", ".join(f"**{job}**" for job in job_system.jobs.keys()),
+            ephemeral=True
+        )
+        return
 
+    if not job_system.can_work(user_id):
+        remaining = job_system.get_remaining_cooldown(user_id)
+        await interaction.response.send_message(
+            f"⌛ Aún no puedes realizar el trabajo de **{trabajo}**. Vuelve en {int(remaining.total_seconds() // 60)} minutos y {int(remaining.total_seconds() % 60)} segundos.",
+            ephemeral=True
+        )
+        return
+
+    reward = job_system.perform_job(user_id, trabajo, economy)
+    if reward:
+        await interaction.response.send_message(
+            f"💼 ¡Has trabajado como **{trabajo}** y has ganado **{reward} monedas**!\n"
+            f"💰 Tu balance actual: {economy.get_balance(user_id)} monedas."
+        )
+    else:
+        await interaction.response.send_message(
+            "❌ Ha ocurrido un error al realizar el trabajo.",
+            ephemeral=True
+        )
+
+@client.tree.command(name="trabajos", description="Muestra los trabajos disponibles y sus detalles.")
+async def trabajos(interaction: discord.Interaction):
+    """Muestra una lista de trabajos disponibles con sus detalles."""
+    job_list = "\n".join(
+        f"**{name.capitalize()}**:\n"
+        f"   💸 Recompensa: {data['min']} - {data['max']} monedas\n"
+        f"   📜 Descripción: {data['description']}"
+        for name, data in job_system.jobs.items()
+    )
+    await interaction.response.send_message(
+        f"💼 **Trabajos disponibles:**\n{job_list}",
+        ephemeral=True
+    )
+@client.tree.command(name="agregar_monedas", description="Agrega una cantidad específica de monedas a un usuario.")
+@tiene_rol_dictador()  # Solo usuarios con rol 'Dictador' pueden usar este comando
+async def agregar_monedas(interaction: discord.Interaction, usuario: discord.Member, cantidad: int):
+    """
+    Comando para agregar monedas al balance de un usuario.
+    """
+    if cantidad <= 0:
+        await interaction.response.send_message("❌ La cantidad debe ser mayor que cero.", ephemeral=True)
+        return
+
+    user_id = str(usuario.id)
+    economy.add_money(user_id, cantidad)  # Agrega monedas al usuario
+    nuevo_balance = economy.get_balance(user_id)  # Obtiene el nuevo balance del usuario
+
+    await interaction.response.send_message(
+        f"✅ Se han agregado **{cantidad} monedas** a {usuario.mention}.\n"
+        f"💰 Nuevo balance: **{nuevo_balance} monedas**."
+    )
+@client.tree.command(name="quitar_monedas", description="Quita una cantidad específica de monedas a un usuario.")
+@tiene_rol_dictador()  # Solo los usuarios con rol 'Dictador' pueden usar este comando
+async def quitar_monedas(interaction: discord.Interaction, usuario: discord.Member, cantidad: int):
+    """
+    Comando para quitar monedas del balance de un usuario.
+    """
+    if cantidad <= 0:
+        await interaction.response.send_message("❌ La cantidad debe ser mayor que cero.", ephemeral=True)
+        return
+
+    user_id = str(usuario.id)
+    balance_actual = economy.get_balance(user_id)  # Obtiene el balance actual del usuario
+
+    if balance_actual < cantidad:
+        await interaction.response.send_message(f"❌ {usuario.mention} no tiene suficientes monedas para quitar {cantidad} monedas.", ephemeral=True)
+        return
+
+    economy.remove_money(user_id, cantidad)  # Quita monedas al usuario
+    nuevo_balance = economy.get_balance(user_id)  # Obtiene el nuevo balance del usuario
+
+    await interaction.response.send_message(
+        f"✅ Se han quitado **{cantidad} monedas** a {usuario.mention}.\n"
+        f"💰 Nuevo balance: **{nuevo_balance} monedas**."
+    )
 TOKEN = ""
 client.run(TOKEN)

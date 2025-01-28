@@ -12,8 +12,6 @@ from typing import Dict, Optional, List, Any
 import uuid
 import os
 from discord.ext import commands, tasks
-
-
 def tiene_rol_dictador():
     async def predicate(interaction: discord.Interaction) -> bool:
         rol_dictador = discord.utils.get(interaction.guild.roles, name="Dictador")
@@ -22,7 +20,12 @@ def tiene_rol_dictador():
             return False
         return rol_dictador in interaction.user.roles
     return app_commands.check(predicate)
-
+def get_multiplier_text(user_id: int) -> tuple[float, str]:
+    inventario = sistema_objetos.obtener_inventario(user_id)
+    multiplicadores = inventario.obtener_efectos_activos("multiplicador")
+    if multiplicadores:
+        return multiplicadores[0].valor, f" (¡multiplicador x{multiplicadores[0].valor} activo!)"
+    return 1.0, ""
 class EconomySystem:
     def __init__(self, filename: str = "economy.json"):
         self.filename = filename
@@ -42,9 +45,19 @@ class EconomySystem:
     def get_balance(self, user_id: str):
         return self.accounts.get(str(user_id), 0)
 
-    def add_money(self, user_id: str, amount: int):
+    def add_money(self, user_id: str, amount: int, check_multiplier: bool = True):
+        if check_multiplier:
+            # Verificar multiplicador activo
+            inventario = sistema_objetos.obtener_inventario(int(user_id))
+            multiplicadores = inventario.obtener_efectos_activos("multiplicador")
+            
+            if multiplicadores:
+                multiplicador = multiplicadores[0].valor
+                amount = int(amount * multiplicador)
+        
         self.accounts[str(user_id)] = self.get_balance(user_id) + amount
         self.save_accounts()
+        return amount  # Retornamos la cantidad final añadida
 
     def remove_money(self, user_id: str, amount: int):
         if self.get_balance(user_id) >= amount:
@@ -56,50 +69,161 @@ class EconomySystem:
 class JobSystem:
     def __init__(self):
         self.jobs = {
-            "minero": {"min": 100, "max": 200, "description": "Trabajas como minero, extrayendo minerales.", "cooldown_minutes": 15},
-            "pescador": {"min": 50, "max": 150, "description": "Sales a pescar y traes una buena captura.", "cooldown_minutes": 10},
-            "programador": {"min": 200, "max": 400, "description": "Creas código y resuelves problemas.", "cooldown_minutes": 30},
+            # Trabajos básicos
+            "minero": {
+                "min": 100,
+                "max": 200,
+                "description": "Trabajas como minero, extrayendo minerales.",
+                "cooldown_minutes": 15
+            },
+            "pescador": {
+                "min": 50,
+                "max": 150,
+                "description": "Sales a pescar y traes una buena captura.",
+                "cooldown_minutes": 10
+            },
+            "programador": {
+                "min": 200,
+                "max": 400,
+                "description": "Creas código y resuelves problemas.",
+                "cooldown_minutes": 30
+            },
+            
+            # Nuevos trabajos
+            "chef": {
+                "min": 150,
+                "max": 300,
+                "description": "Cocinas deliciosos platillos en un restaurante.",
+                "cooldown_minutes": 20
+            },
+            "astronomo": {
+                "min": 300,
+                "max": 600,
+                "description": "Estudias las estrellas y descubres nuevos planetas.",
+                "cooldown_minutes": 45
+            },
+            "cazador": {
+                "min": 175,
+                "max": 350,
+                "description": "Te adentras en el bosque en busca de presas.",
+                "cooldown_minutes": 25
+            },
+            "alquimista": {
+                "min": 250,
+                "max": 500,
+                "description": "Creas pociones y elixires mágicos.",
+                "cooldown_minutes": 35
+            },
+            "arqueólogo": {
+                "min": 400,
+                "max": 800,
+                "description": "Exploras ruinas antiguas en busca de tesoros.",
+                "cooldown_minutes": 60
+            },
+            "mercader": {
+                "min": 125,
+                "max": 250,
+                "description": "Comercias con bienes en el mercado local.",
+                "cooldown_minutes": 18
+            },
+            "inventor": {
+                "min": 350,
+                "max": 700,
+                "description": "Creas ingeniosos aparatos y máquinas.",
+                "cooldown_minutes": 50
+            },
+            "guardián": {
+                "min": 200,
+                "max": 400,
+                "description": "Proteges la ciudad de peligros.",
+                "cooldown_minutes": 30
+            },
+            "mago": {
+                "min": 275,
+                "max": 550,
+                "description": "Realizas trucos de magia para entretener.",
+                "cooldown_minutes": 40
+            },
+            "granjero": {
+                "min": 150,
+                "max": 300,
+                "description": "Cultivas y cosechas productos frescos.",
+                "cooldown_minutes": 20
+            },
+            "artista": {
+                "min": 225,
+                "max": 450,
+                "description": "Creas hermosas obras de arte.",
+                "cooldown_minutes": 35
+            }
         }
         self.user_cooldowns = {}
+        self.special_events = {
+            "lluvia_de_oro": {"boost": 2.0, "chance": 0.1},
+            "crisis_economica": {"boost": 0.5, "chance": 0.05},
+            "festival": {"boost": 1.5, "chance": 0.15},
+            "luna_llena": {"boost": 1.8, "chance": 0.08}
+        }
 
-    def can_work(self, user_id: str, job_name: str) -> bool:
-        if user_id not in self.user_cooldowns:
-            self.user_cooldowns[user_id] = {}
-            return True
-            
-        if job_name not in self.user_cooldowns[user_id]:
-            return True
-            
-        last_work_time = self.user_cooldowns[user_id].get(job_name)
-        cooldown_minutes = self.jobs[job_name]["cooldown_minutes"]
-        return datetime.now() - last_work_time >= timedelta(minutes=cooldown_minutes)
-
-    def get_remaining_cooldown(self, user_id: str, job_name: str) -> timedelta:
-        if user_id not in self.user_cooldowns or job_name not in self.user_cooldowns[user_id]:
-            return timedelta(0)
-            
-        last_work_time = self.user_cooldowns[user_id][job_name]
-        cooldown_minutes = self.jobs[job_name]["cooldown_minutes"]
-        cooldown_end = last_work_time + timedelta(minutes=cooldown_minutes)
+    def get_job_bonus(self, job_name: str) -> float:
+        """Calcula bonus especiales basados en condiciones"""
+        bonus = 1.0
         
-        if datetime.now() >= cooldown_end:
-            return timedelta(0)
-        return cooldown_end - datetime.now()
+        # Eventos aleatorios
+        for event, data in self.special_events.items():
+            if random.random() < data["chance"]:
+                bonus *= data["boost"]
+                return bonus, f"¡{event.replace('_', ' ').title()}! (x{data['boost']})"
+        
+        # Bonus por hora del día
+        hora_actual = datetime.now().hour
+        if 22 <= hora_actual or hora_actual < 4:  # Trabajo nocturno
+            bonus *= 1.3
+            return bonus, "¡Bonus nocturno! (x1.3)"
+        
+        return bonus, ""
 
-    def perform_job(self, user_id: str, job_name: str, economy: EconomySystem) -> int:
+    def perform_job(self, user_id: str, job_name: str, economy: EconomySystem, sistema_objetos) -> tuple[int, str]:
         if not self.can_work(user_id, job_name):
-            return 0
+            return 0, ""
             
         job = self.jobs[job_name]
-        earnings = random.randint(job["min"], job["max"])
+        base_earnings = random.randint(job["min"], job["max"])
         
+        # Obtener bonus del trabajo
+        bonus, bonus_message = self.get_job_bonus(job_name)
+        earnings = int(base_earnings * bonus)
+        
+        # Verificar multiplicador activo del inventario
+        inventario = sistema_objetos.obtener_inventario(int(user_id))
+        multiplicadores = inventario.obtener_efectos_activos("multiplicador")
+        
+        # Aplicar multiplicador si existe
+        if multiplicadores:
+            multiplicador = multiplicadores[0].valor
+            earnings = int(earnings * multiplicador)
+        
+        # Actualizar cooldown
         if user_id not in self.user_cooldowns:
             self.user_cooldowns[user_id] = {}
         self.user_cooldowns[user_id][job_name] = datetime.now()
         
+        # Probabilidad de encuentro especial (5%)
+        encuentro_especial = ""
+        if random.random() < 0.05:
+            recompensas_especiales = [
+                ("💎 ¡Has encontrado una gema brillante!", 500),
+                ("📜 ¡Has descubierto un pergamino antiguo!", 400),
+                ("🏺 ¡Has desenterrado una reliquia!", 600),
+                ("🗝️ ¡Has encontrado una llave misteriosa!", 300),
+                ("📱 ¡Has encontrado un dispositivo extraño!", 450)
+            ]
+            encuentro, bonus_extra = random.choice(recompensas_especiales)
+            earnings += bonus_extra
+            encuentro_especial = f"\n{encuentro} +{bonus_extra} monedas"
+        
         economy.add_money(user_id, earnings)
-        return earnings
-
+        return earnings, bonus_message + encuentro_especial
 class Efecto:
     def __init__(self, 
              tipo: str, 
@@ -229,7 +353,7 @@ class Mascota:
         }
 
     @classmethod
-    def from_dict(cls, data):
+    def from_dict(cls, data: dict):
         mascota = cls(data["nombre"], data["tipo"])
         mascota.nivel = data["nivel"]
         mascota.exp = data["exp"]
@@ -238,7 +362,6 @@ class Mascota:
         mascota.ultima_comida = datetime.fromisoformat(data["ultima_comida"])
         mascota.ultima_caricia = datetime.fromisoformat(data["ultima_caricia"])
         return mascota
-
 class SistemaMascotas:
     def __init__(self, filename: str = "mascotas.json"):
         self.filename = filename
@@ -345,27 +468,35 @@ class InventarioUsuario:
         }
 
     def usar_objeto(self, objeto: Objeto) -> List[Efecto]:
-        # Verificar si tenemos el objeto y si hay suficiente cantidad
         if objeto.nombre not in self.objetos or self.objetos[objeto.nombre]["cantidad"] < 1:
             return []
 
-        # Si el objeto es consumible, reducir la cantidad
+        # Reducir cantidad si es consumible
         if self.objetos[objeto.nombre]["consumible"]:
             self.objetos[objeto.nombre]["cantidad"] -= 1
             if self.objetos[objeto.nombre]["cantidad"] == 0:
                 del self.objetos[objeto.nombre]
 
         efectos_aplicados = []
+        
+        # Verificar si hay un multiplicador de duración activo
+        multiplicador_duracion = 1.0
+        for efecto in self.obtener_efectos_activos("duracion_efectos"):
+            multiplicador_duracion *= efecto.valor
+
         for efecto in objeto.efectos:
-            # Crear una nueva instancia del efecto
+            # Crear nueva instancia del efecto
+            duracion_ajustada = None
+            if efecto.duracion:
+                duracion_ajustada = int(efecto.duracion * multiplicador_duracion)
+
             nuevo_efecto = Efecto(
                 tipo=efecto.tipo,
                 valor=efecto.valor,
-                duracion=efecto.duracion,
+                duracion=duracion_ajustada,
                 apilable=efecto.apilable
             )
             
-            # Añadir el efecto a los efectos activos
             if efecto.tipo not in self.efectos_activos:
                 self.efectos_activos[efecto.tipo] = []
                 
@@ -461,73 +592,199 @@ def inicializar_sistema_objetos() -> SistemaObjetos:
         nombre="bolsa", 
         descripcion="Gana 500 monedas instantáneamente", 
         precio=800,
-        efectos=[Efecto(tipo="monedas_instantaneas", valor=500, duracion=None)],
+        efectos=[Efecto(tipo="monedas_instantaneas", valor=500, duracion=1)],
         emoji="💵",
         max_apilamiento=5,
         consumible=True
     )
+     # Objetos de ganancia inmediata
+    sistema.crear_objeto(
+        nombre="cofre_pequeno",
+        descripcion="Abre un cofre pequeño con 1000 monedas",
+        precio=900,
+        efectos=[Efecto(tipo="monedas_instantaneas", valor=1000, duracion=1)],
+        emoji="📦",
+        max_apilamiento=3,
+        consumible=True
+    )
+
+    sistema.crear_objeto(
+        nombre="cofre_grande",
+        descripcion="Abre un cofre grande con 2500 monedas",
+        precio=2000,
+        efectos=[Efecto(tipo="monedas_instantaneas", valor=2500, duracion=1)],
+        emoji="🎁",
+        max_apilamiento=2,
+        consumible=True
+    )
+
+    # Multiplicadores de diferentes niveles
+    sistema.crear_objeto(
+        nombre="multiplicador_mega",
+        descripcion="Triplica tus ganancias por 30 minutos",
+        precio=2500,
+        efectos=[Efecto(tipo="multiplicador", valor=3, duracion=1800)],
+        emoji="💎",
+        max_apilamiento=1,
+        consumible=True
+    )
+
+    sistema.crear_objeto(
+        nombre="multiplicador_ultra",
+        descripcion="Multiplica tus ganancias x5 por 15 minutos",
+        precio=5000,
+        efectos=[Efecto(tipo="multiplicador", valor=5, duracion=900)],
+        emoji="⭐",
+        max_apilamiento=1,
+        consumible=True
+    )
+
+    # Objetos de protección
+    sistema.crear_objeto(
+        nombre="escudo",
+        descripcion="Te protege contra robos durante 2 horas",
+        precio=1000,
+        efectos=[Efecto(tipo="proteccion_robo", valor=True, duracion=7200)],
+        emoji="🛡️",
+        max_apilamiento=1,
+        consumible=True
+    )
+
+    # Objetos de recompensa diaria
+    sistema.crear_objeto(
+        nombre="amuleto_suerte",
+        descripcion="Duplica tu recompensa diaria por 24 horas",
+        precio=3000,
+        efectos=[Efecto(tipo="multiplicador_daily", valor=2, duracion=86400)],
+        emoji="🍀",
+        max_apilamiento=1,
+        consumible=True
+    )
+
+    # Objetos especiales
+    sistema.crear_objeto(
+        nombre="libro_experiencia",
+        descripcion="Tu mascota gana el doble de experiencia por 1 hora",
+        precio=2000,
+        efectos=[Efecto(tipo="multiplicador_exp_mascota", valor=2, duracion=3600)],
+        emoji="📚",
+        max_apilamiento=2,
+        consumible=True
+    )
+
+    sistema.crear_objeto(
+        nombre="pocion_felicidad",
+        descripcion="Aumenta la felicidad de tu mascota al máximo",
+        precio=800,
+        efectos=[Efecto(tipo="felicidad_mascota", valor=100, duracion=1)],
+        emoji="🧪",
+        max_apilamiento=3,
+        consumible=True
+    )
+
+    sistema.crear_objeto(
+        nombre="festin",
+        descripcion="Alimenta por completo a tu mascota",
+        precio=800,
+        efectos=[Efecto(tipo="hambre_mascota", valor=100, duracion=1)],
+        emoji="🍖",
+        max_apilamiento=3,
+        consumible=True
+    )
+
+    sistema.crear_objeto(
+        nombre="talisman_trabajo",
+        descripcion="Reduce todos los cooldowns de trabajo a la mitad por 1 hora",
+        precio=2500,
+        efectos=[Efecto(tipo="reduccion_cooldown", valor=0.5, duracion=3600)],
+        emoji="⌛",
+        max_apilamiento=1,
+        consumible=True
+    )
+
+    sistema.crear_objeto(
+        nombre="estrella_legendaria",
+        descripcion="Todos los efectos positivos duran 50% más por 24 horas",
+        precio=10000,
+        efectos=[Efecto(tipo="duracion_efectos", valor=1.5, duracion=86400)],
+        emoji="🌟",
+        max_apilamiento=1,
+        consumible=True
+    )
 
     return sistema
+
+    
 class EventSystem:
-    def __init__(self, bot, channel_id):
+    def __init__(self, bot):
         self.bot = bot
-        self.channel_id = channel_id
         self.evento_activo = None
+        self.participantes = set()
+        self.timer_task = None
         self.eventos_disponibles = [
             {
                 "nombre": "lluvia_monedas",
                 "titulo": "🌧️ ¡Lluvia de Monedas!",
-                "descripcion": "Escribe 'recoger' para obtener monedas aleatorias",
-                "duracion": 5,
-                "comando": "recoger"
+                "descripcion": "¡Rápido! Escribe 'recoger' para obtener monedas aleatorias.",
+                "duracion": 2,
+                "comando": "recoger",
+                "min_premio": 50,
+                "max_premio": 200
             },
             {
                 "nombre": "carrera_veloz",
                 "titulo": "🏃 ¡Carrera Veloz!",
-                "descripcion": "El primero en escribir 'correr' gana el premio",
-                "duracion": 3,
-                "comando": "correr"
+                "descripcion": "¡El primero en escribir 'correr' gana el premio!",
+                "duracion": 1,
+                "comando": "correr",
+                "premio": 300
             },
             {
                 "nombre": "cofre_tesoro",
                 "titulo": "🎁 ¡Cofre del Tesoro!",
-                "descripcion": "Escribe 'abrir' para intentar abrir el cofre",
-                "duracion": 4,
-                "comando": "abrir"
+                "descripcion": "Escribe 'abrir' para intentar abrir el cofre. ¡Cuidado, podría estar trampeado!",
+                "duracion": 2,
+                "comando": "abrir",
+                "min_premio": 100,
+                "max_premio": 500,
+                "trampa_probabilidad": 0.3
             },
             {
                 "nombre": "invasion_zombies",
                 "titulo": "🧟 ¡Invasión Zombie!",
-                "descripcion": "Escribe 'disparar' para eliminar zombies",
-                "duracion": 5,
-                "comando": "disparar"
+                "descripcion": "¡Los zombies atacan! Escribe 'disparar' para eliminarlos y ganar monedas.",
+                "duracion": 3,
+                "comando": "disparar",
+                "premio_por_zombie": 50
             },
             {
                 "nombre": "loteria_flash",
                 "titulo": "🎫 ¡Lotería Flash!",
-                "descripcion": "Escribe 'ticket' para participar",
-                "duracion": 3,
-                "comando": "ticket"
+                "descripcion": "¡Participa escribiendo 'ticket' para ganar el premio acumulado!",
+                "duracion": 2,
+                "comando": "ticket",
+                "premio_base": 200,
+                "premio_por_participante": 50
             }
         ]
 
-    async def iniciar_evento_aleatorio(self):
+    async def iniciar_evento_aleatorio(self, channel_id):
         if self.evento_activo:
             return
 
-        evento = random.choice(self.eventos_disponibles)
-        channel = self.bot.get_channel(self.channel_id)
-        
+        channel = self.bot.get_channel(channel_id)
         if not channel:
             return
 
+        evento = random.choice(self.eventos_disponibles)
         self.evento_activo = {
             "tipo": evento["nombre"],
             "fin": datetime.now() + timedelta(minutes=evento["duracion"]),
-            "participantes": set()
+            "config": evento,
+            "channel": channel
         }
+        self.participantes.clear()
 
-        # Anunciar evento
         embed = discord.Embed(
             title=evento["titulo"],
             description=evento["descripcion"],
@@ -537,148 +794,140 @@ class EventSystem:
             name="⏱️ Duración",
             value=f"{evento['duracion']} minutos"
         )
+        embed.add_field(
+            name="📝 Comando",
+            value=f"`{evento['comando']}`"
+        )
 
         await channel.send(embed=embed)
 
-        # Manejar el evento según su tipo
-        if evento["nombre"] == "lluvia_monedas":
-            await self.manejar_lluvia_monedas(channel, evento["duracion"])
-        elif evento["nombre"] == "carrera_veloz":
-            await self.manejar_carrera_veloz(channel, evento["duracion"])
-        elif evento["nombre"] == "cofre_tesoro":
-            await self.manejar_cofre_tesoro(channel, evento["duracion"])
-        elif evento["nombre"] == "invasion_zombies":
-            await self.manejar_invasion_zombies(channel, evento["duracion"])
-        elif evento["nombre"] == "loteria_flash":
-            await self.manejar_loteria_flash(channel, evento["duracion"])
+        # Iniciar el temporizador para finalizar el evento
+        if self.timer_task:
+            self.timer_task.cancel()
+        self.timer_task = asyncio.create_task(self.finalizar_evento_timer(evento["duracion"]))
 
+    async def finalizar_evento_timer(self, duracion):
+        await asyncio.sleep(duracion * 60)
+        if self.evento_activo:
+            await self.finalizar_evento()
+
+    async def finalizar_evento(self):
+        if not self.evento_activo:
+            return
+
+        channel = self.evento_activo["channel"]
+        evento_tipo = self.evento_activo["tipo"]
+        
+        if evento_tipo == "invasion_zombies":
+            # Dar recompensas finales para la invasión zombie
+            for user_id in self.participantes:
+                zombies_eliminados = random.randint(2, 10)
+                premio = zombies_eliminados * self.evento_activo["config"]["premio_por_zombie"]
+                economy.add_money(str(user_id), premio)
+                user = await self.bot.fetch_user(user_id)
+                await channel.send(f"🧟 {user.mention} eliminó {zombies_eliminados} zombies y ganó {premio} monedas!")
+        
+        elif evento_tipo == "loteria_flash":
+            # Sortear ganador de la lotería
+            if self.participantes:
+                ganador_id = random.choice(list(self.participantes))
+                premio = self.evento_activo["config"]["premio_base"] + (len(self.participantes) * self.evento_activo["config"]["premio_por_participante"])
+                economy.add_money(str(ganador_id), premio)
+                ganador = await self.bot.fetch_user(ganador_id)
+                await channel.send(f"🎉 ¡{ganador.mention} ha ganado la lotería flash y {premio} monedas!")
+
+        await channel.send(f"🔚 ¡El evento {self.evento_activo['config']['titulo']} ha terminado!")
         self.evento_activo = None
+        self.participantes.clear()
 
-    async def manejar_lluvia_monedas(self, channel, duracion):
-        fin = datetime.now() + timedelta(minutes=duracion)
+    async def procesar_mensaje(self, message):
+        if not self.evento_activo or message.author.bot:
+            return
+
+        if message.channel.id != self.evento_activo["channel"].id:
+            return
+
+        evento = self.evento_activo
+        if message.content.lower() != evento["config"]["comando"]:
+            return
+
+        if datetime.now() > evento["fin"]:
+            await self.finalizar_evento()
+            return
+
+        await self.manejar_participacion(message, evento)
+
+    async def manejar_participacion(self, message, evento):
+        user_id = message.author.id
+        evento_tipo = evento["tipo"]
         
-        while datetime.now() < fin:
-            try:
-                mensaje = await self.bot.wait_for(
-                    'message',
-                    timeout=60,
-                    check=lambda m: m.channel == channel and m.content.lower() == "recoger"
-                )
+        if evento_tipo == "lluvia_monedas":
+            if user_id not in self.participantes:
+                monedas = random.randint(evento["config"]["min_premio"], evento["config"]["max_premio"])
+                economy.add_money(str(user_id), monedas)
+                self.participantes.add(user_id)
+                await message.channel.send(f"🌧️ ¡{message.author.mention} ha recogido {monedas} monedas!")
 
-                if mensaje.author.id not in self.evento_activo["participantes"]:
-                    monedas = random.randint(50, 200)
-                    economy.add_money(str(mensaje.author.id), monedas)
-                    self.evento_activo["participantes"].add(mensaje.author.id)
-                    await channel.send(f"🌧️ ¡{mensaje.author.mention} ha recogido {monedas} monedas!")
+        elif evento_tipo == "carrera_veloz":
+            if not self.participantes:  # Si nadie ha ganado aún
+                self.participantes.add(user_id)
+                economy.add_money(str(user_id), evento["config"]["premio"])
+                await message.channel.send(f"🏃 ¡{message.author.mention} ha ganado la carrera y {evento['config']['premio']} monedas!")
+                await self.finalizar_evento()
 
-            except asyncio.TimeoutError:
-                continue
+        elif evento_tipo == "cofre_tesoro":
+            if user_id not in self.participantes:
+                self.participantes.add(user_id)
+                if random.random() > evento["config"]["trampa_probabilidad"]:
+                    premio = random.randint(evento["config"]["min_premio"], evento["config"]["max_premio"])
+                    economy.add_money(str(user_id), premio)
+                    await message.channel.send(f"🎁 ¡{message.author.mention} ha encontrado {premio} monedas en el cofre!")
+                else:
+                    await message.channel.send(f"💥 ¡El cofre estaba trampeado! {message.author.mention} no ha conseguido nada.")
 
-        await channel.send("🌧️ ¡La lluvia de monedas ha terminado!")
+        elif evento_tipo == "invasion_zombies":
+            if user_id not in self.participantes:
+                self.participantes.add(user_id)
+            zombies = random.randint(1, 5)
+            premio = zombies * evento["config"]["premio_por_zombie"]
+            economy.add_money(str(user_id), premio)
+            await message.channel.send(f"🧟 ¡{message.author.mention} ha eliminado {zombies} zombies y ganado {premio} monedas!")
 
-    async def manejar_carrera_veloz(self, channel, duracion):
+        elif evento_tipo == "loteria_flash":
+            if user_id not in self.participantes:
+                self.participantes.add(user_id)
+                await message.channel.send(f"🎫 {message.author.mention} ha comprado un ticket para la lotería flash.")
+class DailyReward:
+    def __init__(self, filename: str = "daily_rewards.json"):
+        self.filename = filename
+        self.last_claims = self.load_claims()
+
+    def load_claims(self):
         try:
-            mensaje = await self.bot.wait_for(
-                'message',
-                timeout=duracion * 60,
-                check=lambda m: m.channel == channel and m.content.lower() == "correr"
-            )
-            
-            premio = random.randint(300, 600)
-            economy.add_money(str(mensaje.author.id), premio)
-            await channel.send(f"🏃 ¡{mensaje.author.mention} ha ganado la carrera y {premio} monedas!")
+            with open(self.filename, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+
+    def save_claims(self):
+        with open(self.filename, 'w') as f:
+            json.dump(self.last_claims, f)
+
+    def can_claim(self, user_id: str) -> bool:
+        if user_id not in self.last_claims:
+            return True
         
-        except asyncio.TimeoutError:
-            await channel.send("🏃 Nadie completó la carrera...")
-
-    async def manejar_cofre_tesoro(self, channel, duracion):
-        fin = datetime.now() + timedelta(minutes=duracion)
+        last_claim = datetime.fromisoformat(self.last_claims[user_id])
+        now = datetime.now()
         
-        while datetime.now() < fin:
-            try:
-                mensaje = await self.bot.wait_for(
-                    'message',
-                    timeout=60,
-                    check=lambda m: m.channel == channel and m.content.lower() == "abrir"
-                )
+        # Check if last claim was before today's reset (00:00)
+        today_reset = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return last_claim < today_reset
 
-                if mensaje.author.id not in self.evento_activo["participantes"]:
-                    if random.random() < 0.3:  # 30% de probabilidad de éxito
-                        premio = random.randint(200, 1000)
-                        economy.add_money(str(mensaje.author.id), premio)
-                        await channel.send(f"🎁 ¡{mensaje.author.mention} ha encontrado {premio} monedas en el cofre!")
-                    else:
-                        await channel.send(f"🎁 {mensaje.author.mention} no logró abrir el cofre...")
-                    
-                    self.evento_activo["participantes"].add(mensaje.author.id)
-
-            except asyncio.TimeoutError:
-                continue
-
-        await channel.send("🎁 El cofre del tesoro ha desaparecido...")
-
-    async def manejar_invasion_zombies(self, channel, duracion):
-        fin = datetime.now() + timedelta(minutes=duracion)
-        puntuaciones = {}
+    def claim(self, user_id: str):
+        self.last_claims[user_id] = datetime.now().isoformat()
+        self.save_claims()
         
-        while datetime.now() < fin:
-            try:
-                mensaje = await self.bot.wait_for(
-                    'message',
-                    timeout=60,
-                    check=lambda m: m.channel == channel and m.content.lower() == "disparar"
-                )
-
-                zombies = random.randint(1, 5)
-                author_id = str(mensaje.author.id)
-                puntuaciones[author_id] = puntuaciones.get(author_id, 0) + zombies
-                await channel.send(f"🧟 ¡{mensaje.author.mention} ha eliminado {zombies} zombies!")
-
-            except asyncio.TimeoutError:
-                continue
-
-        # Premiar a los participantes
-        if puntuaciones:
-            for user_id, zombies in puntuaciones.items():
-                premio = zombies * 50
-                economy.add_money(user_id, premio)
-                user = await self.bot.fetch_user(int(user_id))
-                await channel.send(f"🏆 {user.mention} eliminó {zombies} zombies y ganó {premio} monedas!")
-
-        await channel.send("🧟 ¡La invasión zombie ha terminado!")
-
-    async def manejar_loteria_flash(self, channel, duracion):
-        participantes = []
-        
-        # Fase de registro
-        await channel.send("🎫 ¡Registrándose participantes para la lotería flash!")
-        
-        fin = datetime.now() + timedelta(minutes=duracion)
-        while datetime.now() < fin:
-            try:
-                mensaje = await self.bot.wait_for(
-                    'message',
-                    timeout=60,
-                    check=lambda m: m.channel == channel and m.content.lower() == "ticket"
-                )
-
-                if mensaje.author.id not in [p.id for p in participantes]:
-                    participantes.append(mensaje.author)
-                    await channel.send(f"🎫 {mensaje.author.mention} se ha registrado para la lotería!")
-
-            except asyncio.TimeoutError:
-                continue
-
-        # Seleccionar ganador
-        if participantes:
-            ganador = random.choice(participantes)
-            premio = len(participantes) * 100  # Premio basado en cantidad de participantes
-            economy.add_money(str(ganador.id), premio)
-            await channel.send(f"🎉 ¡{ganador.mention} ha ganado la lotería flash y {premio} monedas!")
-        else:
-            await channel.send("🎫 Nadie participó en la lotería flash...")
-
-
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
@@ -689,32 +938,58 @@ class Bot(commands.Bot):
 
     async def setup_hook(self):
         try:
+            # Solo sincronizamos con el servidor específico, no globalmente
             guild = discord.Object(id=1305217034619060304)
-            # Primero limpiamos los comandos existentes
-            self.tree.clear_commands(guild=guild)
-            # Luego sincronizamos
             await self.tree.sync(guild=guild)
+            print("Comandos sincronizados en el servidor específico.")
         except Exception as e:
             print(f"Error en setup_hook: {e}")
 
-# Inicializar sistemas ANTES de crear el cliente
-sistema_objetos = inicializar_sistema_objetos()
-sistema_mascotas = SistemaMascotas()
-economy = EconomySystem()
-job_system = JobSystem()
-# Crear cliente de bot
+# Inicializamos el cliente
 client = Bot()
 
-# Definir eventos
+# Inicializamos todos los sistemas
+economy = EconomySystem()
+job_system = JobSystem()
+sistema_mascotas = SistemaMascotas()
+sistema_objetos = inicializar_sistema_objetos()
+daily_reward = DailyReward()
+event_system = EventSystem(client)
+
+# Configuramos la tarea periódica de eventos
+@tasks.loop(minutes=30)
+async def eventos_automaticos():
+    channel_id = 1305217034619060306  # Canal específico para eventos
+    if not event_system.evento_activo and random.random() < 0.3:  # 30% de probabilidad
+        await event_system.iniciar_evento_aleatorio(channel_id)
+# Añadimos un before_loop para esperar antes del primer evento
+@eventos_automaticos.before_loop
+async def before_eventos_automaticos():
+    await asyncio.sleep(300)  # Espera 5 minutos antes del primer intento
+# Event handlers
+@client.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    await event_system.procesar_mensaje(message)
+    await client.process_commands(message)
+
 @client.event
 async def on_ready():
     print(f"Bot conectado como {client.user}")
     print(f"ID del bot: {client.user.id}")
+    
+    # Iniciar la tarea de eventos automáticos
+    eventos_automaticos.start()
 
+    # Enviar mensaje de bienvenida
     canal_id = 1305217034619060306
     canal = client.get_channel(canal_id)
     if canal:
         await canal.send("Buenos dias la paga os quiten chacho")
+
+# Event handlers
+
 MENSAJES_A_DETECTAR = [
     "Abrazafarolas", "Adefesio", "Adoquín", "Alelado", "Alfeñique", "Analfabeto",
     "Andurriasmo", "Apollardao", "Archipámpano", "Artabán", "Asaltacunas", "Asno",
@@ -781,8 +1056,70 @@ RESPUESTAS = [
     "Sigue así y te mando con la virgen negra"
 ]
 
+@client.tree.command(name="iniciar_evento", description="Inicia un evento aleatorio manual")
+@tiene_rol_dictador()
+async def iniciar_evento(interaction: discord.Interaction):
+    """Este comando reemplaza al anterior comando 'evento'"""
+    await event_system.iniciar_evento_aleatorio(interaction.channel_id)
+    await interaction.response.send_message("✅ Evento iniciado manualmente", ephemeral=True)
+    
+@client.tree.command(name="daily", description="Reclama tu recompensa diaria")
+async def daily(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    
+    if not daily_reward.can_claim(user_id):
+        # Calculate time until next reset
+        
+        now = datetime.now()
+        next_reset = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        time_until_reset = next_reset - now
+        
+        hours, remainder = divmod(time_until_reset.seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
+        
+        await interaction.response.send_message(
+            f"⏳ Ya has reclamado tu recompensa diaria.\n"
+            f"Vuelve en {hours} horas y {minutes} minutos."
+        )
+        return
 
+    # Base reward amount
+    reward_amount = 100
+    inventario = sistema_objetos.obtener_inventario(int(user_id))
+    for efecto in inventario.obtener_efectos_activos("multiplicador_daily"):
+        reward_amount *= efecto.valor
+    # Check if user has a pet for bonus
+    if user_id in sistema_mascotas.mascotas:
+        mascota = sistema_mascotas.mascotas[user_id]
+        tipo_mascota = mascota.tipo
+        
+        # Apply pet bonus if applicable
+        if tipo_mascota in sistema_mascotas.tipos:
+            bonus_monedas = sistema_mascotas.tipos[tipo_mascota].get("bonus_monedas", 1.0)
+            reward_amount = int(reward_amount * bonus_monedas)
 
+    # Add streak system later if desired
+    economy.add_money(user_id, reward_amount)
+    daily_reward.claim(user_id)
+    
+    embed = discord.Embed(
+        title="🎁 Recompensa Diaria",
+        description=f"Has reclamado {reward_amount} monedas",
+        color=discord.Color.green()
+    )
+    
+    if reward_amount > 100:  # If bonus was applied
+        embed.add_field(
+            name="✨ Bonus",
+            value=f"Tu mascota te dio un bonus en la recompensa!"
+        )
+    
+    embed.add_field(
+        name="💰 Balance",
+        value=f"Balance actual: {economy.get_balance(user_id)} monedas"
+    )
+    
+    await interaction.response.send_message(embed=embed)
 @client.tree.command(name="balance", description="Muestra tu balance de monedas")
 async def balance(interaction: discord.Interaction, usuario: discord.Member = None):
     usuario = usuario or interaction.user
@@ -793,29 +1130,20 @@ async def balance(interaction: discord.Interaction, usuario: discord.Member = No
         await interaction.response.send_message(f"💰 Tu balance actual es de {balance} monedas.")
     else:
         await interaction.response.send_message(f"💰 El balance de {usuario.mention} es de {balance} monedas.")
-@client.tree.command(name="daily", description="Reclama tus monedas diarias")
-@app_commands.checks.cooldown(1, 86400)
-async def daily(interaction: discord.Interaction):
-    amount = random.randint(100, 500)
-    user_id = str(interaction.user.id)
-    # Agrega monedas
-    economy.add_money(user_id, amount)
-    # Responde al usuario
-    await interaction.response.send_message(
-        f"✨ ¡Has reclamado tus {amount} monedas diarias!\n"
-        f"💰 Balance actual: {economy.get_balance(user_id)} monedas"
-    )
+
 
 @client.tree.command(name="trabajar", description="Realiza un trabajo para ganar monedas")
 async def trabajar(interaction: discord.Interaction, trabajo: str):
     user_id = str(interaction.user.id)
 
     if trabajo not in job_system.jobs:
+        trabajos_disponibles = "\n".join([f"**{job}** ({data['min']}-{data['max']} monedas, {data['cooldown_minutes']}min)" 
+                                        for job, data in job_system.jobs.items()])
         await interaction.response.send_message(
-            "❌ Trabajo no válido. Trabajos disponibles:\n" +
-            ", ".join(f"**{job}**" for job in job_system.jobs.keys())
+            f"❌ Trabajo no válido. Trabajos disponibles:\n{trabajos_disponibles}"
         )
         return
+
     if not job_system.can_work(user_id, trabajo):
         remaining = job_system.get_remaining_cooldown(user_id, trabajo)
         await interaction.response.send_message(
@@ -823,11 +1151,34 @@ async def trabajar(interaction: discord.Interaction, trabajo: str):
             f"{int(remaining.total_seconds() % 60)} segundos para trabajar de nuevo."
         )
         return
-    earnings = job_system.perform_job(user_id, trabajo, economy)
-    await interaction.response.send_message(
-        f"💼 Has trabajado como {trabajo} y ganaste {earnings} monedas.\n"
-        f"💰 Balance actual: {economy.get_balance(user_id)} monedas"
+
+    earnings, special_message = job_system.perform_job(user_id, trabajo, economy, sistema_objetos)
+    
+    embed = discord.Embed(
+        title=f"💼 Trabajo: {trabajo}",
+        color=discord.Color.green()
     )
+    
+    embed.add_field(
+        name="💰 Ganancias",
+        value=f"{earnings} monedas",
+        inline=False
+    )
+    
+    if special_message:
+        embed.add_field(
+            name="✨ ¡Evento Especial!",
+            value=special_message,
+            inline=False
+        )
+    
+    embed.add_field(
+        name="💳 Balance Actual",
+        value=f"{economy.get_balance(user_id)} monedas",
+        inline=False
+    )
+
+    await interaction.response.send_message(embed=embed)
 
 @client.tree.command(name="trabajos", description="Muestra los trabajos disponibles")
 async def trabajos(interaction: discord.Interaction):
@@ -940,9 +1291,10 @@ class DiceView(View):
 
         if user_roll > bot_roll:
             winnings = self.apuesta * 2
-            self.economy.add_money(self.user_id, winnings)
+            final_winnings = self.economy.add_money(self.user_id, winnings)
+            _, mult_text = get_multiplier_text(int(self.user_id))
             result = (f"🎲 Tu dado: {user_roll}\n🎲 Mi dado: {bot_roll}\n"
-                     f"🎉 ¡Ganaste {winnings} monedas!")
+                     f"🎉 ¡Ganaste {final_winnings} monedas!{mult_text}")
         elif user_roll < bot_roll:
             result = (f"🎲 Tu dado: {user_roll}\n🎲 Mi dado: {bot_roll}\n"
                      f"😔 Perdiste {self.apuesta} monedas")
@@ -1030,21 +1382,21 @@ class SlotMachineView(View):
 
         symbols = ["🍒", "🍊", "🍋", "🍇", "💎", "7️⃣"]
         result = [random.choice(symbols) for _ in range(3)]
+        _, mult_text = get_multiplier_text(int(self.user_id))
 
         if all(s == result[0] for s in result):
             winnings = self.apuesta * 5
-            self.economy.add_money(self.user_id, winnings)
-            message = f"🎰 [{' | '.join(result)}]\n🎉 ¡JACKPOT! Ganaste {winnings} monedas"
+            final_winnings = self.economy.add_money(self.user_id, winnings)
+            message = f"🎰 [{' | '.join(result)}]\n🎉 ¡JACKPOT! Ganaste {final_winnings} monedas{mult_text}"
         elif result.count(result[0]) == 2 or result.count(result[1]) == 2:
             winnings = self.apuesta * 2
-            self.economy.add_money(self.user_id, winnings)
-            message = f"🎰 [{' | '.join(result)}]\n🎉 ¡Dos iguales! Ganaste {winnings} monedas"
+            final_winnings = self.economy.add_money(self.user_id, winnings)
+            message = f"🎰 [{' | '.join(result)}]\n🎉 ¡Dos iguales! Ganaste {final_winnings} monedas{mult_text}"
         else:
             message = f"🎰 [{' | '.join(result)}]\n😔 Perdiste {self.apuesta} monedas"
 
         message += f"\n💰 Balance: {self.economy.get_balance(self.user_id)} monedas"
         await interaction.response.edit_message(content=message, view=self)
-
     async def increase_bet_callback(self, interaction: discord.Interaction):
         new_bet = self.apuesta + 10
         if self.economy.get_balance(self.user_id) >= new_bet:
@@ -1069,6 +1421,29 @@ class SlotMachineView(View):
             item.disabled = True
         await interaction.response.edit_message(content="👋 ¡Gracias por jugar!", view=self)
 
+@client.tree.command(name="sync", description="Sincroniza los comandos del bot")
+@tiene_rol_dictador()
+async def sync(interaction: discord.Interaction):
+    try:
+        guild = discord.Object(id=interaction.guild_id)
+        synced = await client.tree.sync(guild=guild)
+        await interaction.response.send_message(
+            f"Sincronizados {len(synced)} comandos",
+            ephemeral=True
+        )
+    except Exception as e:
+        await interaction.response.send_message(
+            f"Error: {str(e)}",
+            ephemeral=True
+        )
+
+# Manejo de errores para el comando /sync
+@sync.error
+async def sync_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("No tienes permisos para usar este comando.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"Ocurrió un error: {error}", ephemeral=True)
 @client.tree.command(name="tragaperras", description="Juega a la tragaperras")
 async def tragaperras(interaction: discord.Interaction, apuesta: int):
     if apuesta < 10:
@@ -1119,6 +1494,7 @@ class RouletteView(View):
         bet_type = interaction.data["custom_id"]
         number = random.randint(0, 36)
         color = self.get_number_color(number)
+        _, mult_text = get_multiplier_text(int(self.user_id))
 
         result_message = f"🎲 La bola ha caído en el {number} ({color})\n"
         won = False
@@ -1142,8 +1518,8 @@ class RouletteView(View):
 
         if won:
             winnings = self.bet_amount * multiplier
-            self.economy.add_money(self.user_id, winnings)
-            result_message += f"🎉 ¡Ganaste {winnings} monedas!"
+            final_winnings = self.economy.add_money(self.user_id, winnings)
+            result_message += f"🎉 ¡Ganaste {final_winnings} monedas!{mult_text}"
         else:
             result_message += f"😔 Perdiste {self.bet_amount} monedas"
 
@@ -1153,7 +1529,6 @@ class RouletteView(View):
             item.disabled = True
 
         await interaction.response.edit_message(content=result_message, view=self)
-
 
 
 @client.tree.command(name="ruleta", description="Juega a la ruleta")
@@ -1362,35 +1737,92 @@ async def usar(interaction: discord.Interaction, objeto: str):
         await interaction.response.send_message("❌ Objeto no encontrado")
         return
 
+    # Verificar si el usuario tiene el objeto
     efectos = inventario.usar_objeto(objeto_encontrado)
     if not efectos:
         await interaction.response.send_message("❌ No tienes ese objeto en tu inventario")
         return
 
-    # Aplicar efectos inmediatos
-    for efecto in efectos:
-        if efecto.tipo == "monedas_instantaneas":
-            economy.add_money(str(user_id), efecto.valor)
-
-    # Guardar los cambios en el inventario
-    sistema_objetos.save_data()
-
-    # Mensaje de éxito
+    # Crear el mensaje de resultado
     embed = discord.Embed(
         title=f"✨ Has usado {objeto_encontrado.nombre}",
         color=discord.Color.green()
     )
 
-    # Mostrar efectos aplicados
-    efectos_texto = []
+    # Aplicar efectos según el tipo
     for efecto in efectos:
-        if efecto.duracion:
-            efectos_texto.append(f"• {efecto.tipo.capitalize()}: Activo por {efecto.duracion//60} minutos")
-        else:
-            efectos_texto.append(f"• {efecto.tipo.capitalize()}: Efecto aplicado")
+        mensaje_efecto = ""
 
-    if efectos_texto:
-        embed.add_field(name="Efectos", value="\n".join(efectos_texto), inline=False)
+        if efecto.tipo == "monedas_instantaneas":
+            # Dar monedas instantáneas
+            cantidad_final = economy.add_money(str(user_id), efecto.valor)
+            mensaje_efecto = f"Has ganado {cantidad_final} monedas"
+
+        elif efecto.tipo == "multiplicador":
+            # El multiplicador se aplica automáticamente en el sistema económico
+            horas = efecto.duracion // 3600
+            minutos = (efecto.duracion % 3600) // 60
+            mensaje_efecto = f"Multiplicador x{efecto.valor} activo por {horas}h {minutos}m"
+
+        elif efecto.tipo == "proteccion_robo":
+            # La protección se verifica en el comando robar
+            horas = efecto.duracion // 3600
+            mensaje_efecto = f"Protección contra robos activa por {horas} horas"
+
+        elif efecto.tipo == "multiplicador_daily":
+            # Se aplicará en la próxima recompensa diaria
+            horas = efecto.duracion // 3600
+            mensaje_efecto = f"Tu próxima recompensa diaria será multiplicada por {efecto.valor}"
+
+        elif efecto.tipo == "multiplicador_exp_mascota":
+            # Verificar si el usuario tiene mascota
+            if str(user_id) not in sistema_mascotas.mascotas:
+                mensaje_efecto = "❌ Necesitas una mascota para usar este objeto"
+            else:
+                horas = efecto.duracion // 3600
+                mensaje_efecto = f"Tu mascota ganará x{efecto.valor} experiencia por {horas} horas"
+
+        elif efecto.tipo in ["felicidad_mascota", "hambre_mascota"]:
+            # Verificar si el usuario tiene mascota
+            if str(user_id) not in sistema_mascotas.mascotas:
+                mensaje_efecto = "❌ Necesitas una mascota para usar este objeto"
+            else:
+                mascota = sistema_mascotas.mascotas[str(user_id)]
+                if efecto.tipo == "felicidad_mascota":
+                    mascota.felicidad = min(100, mascota.felicidad + efecto.valor)
+                    mensaje_efecto = f"Felicidad de {mascota.nombre} aumentada a {mascota.felicidad}%"
+                else:
+                    mascota.hambre = min(100, mascota.hambre + efecto.valor)
+                    mensaje_efecto = f"Hambre de {mascota.nombre} reducida a {mascota.hambre}%"
+                sistema_mascotas.save_data()
+
+        elif efecto.tipo == "reduccion_cooldown":
+            # La reducción se aplica automáticamente en el sistema de trabajos
+            horas = efecto.duracion // 3600
+            porcentaje = int((1 - efecto.valor) * 100)
+            mensaje_efecto = f"Cooldowns reducidos {porcentaje}% por {horas} horas"
+
+        elif efecto.tipo == "duracion_efectos":
+            # Este efecto se aplica a todos los nuevos efectos
+            horas = efecto.duracion // 3600
+            porcentaje = int((efecto.valor - 1) * 100)
+            mensaje_efecto = f"Todos los efectos durarán {porcentaje}% más por {horas} horas"
+
+        embed.add_field(
+            name=f"{objeto_encontrado.emoji} Efecto Aplicado",
+            value=mensaje_efecto,
+            inline=False
+        )
+
+    # Guardar los cambios
+    sistema_objetos.save_data()
+
+    # Mostrar el balance actual
+    embed.add_field(
+        name="💰 Balance Actual",
+        value=f"{economy.get_balance(str(user_id))} monedas",
+        inline=False
+    )
 
     await interaction.response.send_message(embed=embed)
 @client.tree.command(name="regalar", description="Regala un objeto a otro usuario")
@@ -1517,29 +1949,24 @@ async def rasca(interaction: discord.Interaction):
         await interaction.response.send_message("❌ No tienes suficientes monedas")
         return
 
-    # Matriz del rasca
     simbolos = ["💎", "💰", "🎰", "⭐", "🎲"]
     rasca = [[random.choice(simbolos) for _ in range(3)] for _ in range(3)]
 
     premio = 0
     mensaje = "🎫 Tu rasca:\n\n"
 
-    # Mostrar el rasca
     for fila in rasca:
         mensaje += " ".join(fila) + "\n"
 
-    # Comprobar filas
     for fila in rasca:
         if len(set(fila)) == 1:
             premio += 200
 
-    # Comprobar columnas
     for j in range(3):
         columna = [rasca[i][j] for i in range(3)]
         if len(set(columna)) == 1:
             premio += 200
 
-    # Comprobar diagonales
     diagonal1 = [rasca[i][i] for i in range(3)]
     diagonal2 = [rasca[i][2-i] for i in range(3)]
     
@@ -1548,17 +1975,18 @@ async def rasca(interaction: discord.Interaction):
     if len(set(diagonal2)) == 1:
         premio += 300
 
+    _, mult_text = get_multiplier_text(interaction.user.id)
+
     if premio > 0:
-        economy.add_money(user_id, premio)
-        mensaje += f"\n🎉 ¡Has ganado {premio} monedas!"
+        final_premio = economy.add_money(user_id, premio)
+        mensaje += f"\n🎉 ¡Has ganado {final_premio} monedas!{mult_text}"
     else:
         mensaje += "\n😔 No hay premio"
 
     mensaje += f"\n💰 Balance: {economy.get_balance(user_id)} monedas"
     await interaction.response.send_message(mensaje)
-
 @client.tree.command(name="loteria", description="Compra un boleto de lotería")
-@app_commands.checks.cooldown(1, 86400)  # Una vez al día
+@app_commands.checks.cooldown(1, 86400)
 async def loteria(interaction: discord.Interaction):
     precio_boleto = 100
     user_id = str(interaction.user.id)
@@ -1575,14 +2003,15 @@ async def loteria(interaction: discord.Interaction):
 
     await asyncio.sleep(60)
     numero_ganador = random.randint(1, 99)
+    _, mult_text = get_multiplier_text(interaction.user.id)
 
     if numero_jugador == numero_ganador:
         premio = precio_boleto * 50
-        economy.add_money(user_id, premio)
+        final_premio = economy.add_money(user_id, premio)
         await interaction.channel.send(
             f"🎉 ¡{interaction.user.mention} ha ganado la lotería!\n"
             f"Número ganador: {numero_ganador:02d}\n"
-            f"Premio: {premio} monedas"
+            f"Premio: {final_premio} monedas{mult_text}"
         )
     else:
         await interaction.channel.send(
@@ -1593,7 +2022,7 @@ async def loteria(interaction: discord.Interaction):
         )
 
 @client.tree.command(name="robar", description="Intenta robar monedas a otro usuario")
-@app_commands.checks.cooldown(1, 3600)  # 1 hora de cooldown
+@app_commands.checks.cooldown(1, 3600)
 async def robar(interaction: discord.Interaction, victima: discord.Member):
     if victima.id == interaction.user.id:
         await interaction.response.send_message("❌ No puedes robarte a ti mismo")
@@ -1602,7 +2031,6 @@ async def robar(interaction: discord.Interaction, victima: discord.Member):
     ladron_id = str(interaction.user.id)
     victima_id = str(victima.id)
 
-    # Verificar si la víctima tiene protección
     inventario_victima = sistema_objetos.obtener_inventario(victima.id)
     efectos_proteccion = inventario_victima.obtener_efectos_activos("proteccion_robo")
     if efectos_proteccion:
@@ -1618,20 +2046,20 @@ async def robar(interaction: discord.Interaction, victima: discord.Member):
         )
         return
 
-    # Probabilidad de éxito base del 40%
     exito = random.random() < 0.4
+    _, mult_text = get_multiplier_text(interaction.user.id)
 
     if exito:
         cantidad = random.randint(10, min(100, balance_victima))
         economy.remove_money(victima_id, cantidad)
-        economy.add_money(ladron_id, cantidad)
+        final_cantidad = economy.add_money(ladron_id, cantidad)
         await interaction.response.send_message(
-            f"🦹 ¡Robo exitoso! Le has robado {cantidad} monedas a {victima.mention}"
+            f"🦹 ¡Robo exitoso! Le has robado {final_cantidad} monedas a {victima.mention}{mult_text}"
         )
     else:
         multa = random.randint(50, 200)
         if economy.remove_money(ladron_id, multa):
-            economy.add_money(victima_id, multa // 2)  # La víctima recibe la mitad
+            economy.add_money(victima_id, multa // 2, check_multiplier=False)  # La víctima no recibe multiplicador
             await interaction.response.send_message(
                 f"👮 ¡Te han pillado! Multa de {multa} monedas\n"
                 f"{victima.mention} recibe {multa // 2} monedas de compensación"
@@ -1640,6 +2068,7 @@ async def robar(interaction: discord.Interaction, victima: discord.Member):
             await interaction.response.send_message(
                 "❌ No tienes suficientes monedas para pagar la multa si te pillan"
             )
+
 
 @client.tree.command(name="duelo", description="Desafía a otro usuario a un duelo por monedas")
 async def duelo(interaction: discord.Interaction, oponente: discord.Member, apuesta: int):
@@ -1712,14 +2141,15 @@ async def duelo(interaction: discord.Interaction, oponente: discord.Member, apue
             await asyncio.sleep(2)
 
     # Determinar ganador
+    # Al momento de dar el premio:
     ganador = interaction.user if vida_retador > vida_oponente else oponente
     ganador_id = str(ganador.id)
-    economy.add_money(ganador_id, total_pot)
+    _, mult_text = get_multiplier_text(ganador.id)
+    final_premio = economy.add_money(ganador_id, total_pot)
 
     await interaction.channel.send(
-        f"🏆 ¡{ganador.mention} gana el duelo y {total_pot} monedas!"
+        f"🏆 ¡{ganador.mention} gana el duelo y {final_premio} monedas!{mult_text}"
     )
-
 @client.tree.command(name="flip", description="Apuesta a cara o cruz")
 async def flip(interaction: discord.Interaction, eleccion: str, apuesta: int):
     if eleccion.lower() not in ['cara', 'cruz']:
@@ -1736,12 +2166,14 @@ async def flip(interaction: discord.Interaction, eleccion: str, apuesta: int):
         return
 
     resultado = random.choice(['cara', 'cruz'])
+    _, mult_text = get_multiplier_text(interaction.user.id)
+    
     if resultado == eleccion.lower():
         winnings = apuesta * 2
-        economy.add_money(user_id, winnings)
+        final_winnings = economy.add_money(user_id, winnings)
         await interaction.response.send_message(
             f"🎲 Salió {resultado}!\n"
-            f"🎉 ¡Has ganado {winnings} monedas!\n"
+            f"🎉 ¡Has ganado {final_winnings} monedas!{mult_text}\n"
             f"💰 Balance: {economy.get_balance(user_id)} monedas"
         )
     else:
@@ -2081,10 +2513,11 @@ async def carrera(interaction: discord.Interaction, apuesta: int):
     # Determinar resultado
     if ganador == view.caballo_elegido:
         premio = apuesta * 5
-        economy.add_money(user_id, premio)
+        _, mult_text = get_multiplier_text(interaction.user.id)
+        final_premio = economy.add_money(user_id, premio)
         await view.interaction.channel.send(
             f"🎉 ¡Tu caballo {caballos[ganador]} ha ganado!\n"
-            f"Has ganado {premio} monedas!\n"
+            f"Has ganado {final_premio} monedas!{mult_text}\n"
             f"💰 Balance: {economy.get_balance(user_id)} monedas"
         )
     else:
@@ -2360,5 +2793,5 @@ async def ruleta_global(interaction: discord.Interaction):
     else:
         await interaction.channel.send("❌ ¡Todos los participantes han sido eliminados!")
 
-TOKEN = ""
+TOKEN = "TU TOKEN"
 client.run(TOKEN)

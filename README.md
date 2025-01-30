@@ -45,3 +45,4 @@ Este repositorio contiene un bot de Discord altamente personalizable y dinámico
 - **Python**: 3.9+
 - **Bibliotecas**: `discord.py`, `asyncio`, `json`.
 
+asdbjds
